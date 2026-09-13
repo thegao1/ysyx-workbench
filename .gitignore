@@ -1,4 +1,3 @@
-*.*
 *
 !*/
 !/nemu/*
@@ -11,3 +10,14 @@
 !.gitignore
 !init.sh
 /nvboard
+
+/npc/**/obj_dir/
+/npc/**/*.o
+/npc/**/*.d
+/npc/**/*.vcd
+/npc/**/*.log
+/npc/**/*.fst
+/npc/**/*.out
+
+# 忽略verilator
+/verilator//riscv-tests
