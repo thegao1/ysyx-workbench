@@ -4,7 +4,7 @@
 !/nexus-am/*
 !/nanos-lite/*
 !/navy-apps/*
-!/npc/*
+!/npc/**
 !Makefile
 !README.md
 !.gitignore
@@ -21,3 +21,18 @@
 
 # 忽略verilator
 /verilator//riscv-tests
+
+# npc 构建产物（在恢复规则之后显式忽略）
+/npc/build/
+/npc/obj_dir/
+/npc/sEMU/hello
+/npc/sEMU/sEMU
+
+# 子项目（独立 git 仓库）：不作为 gitlink 或内容纳入主仓库
+/abstract-machine/
+/am-kernels/
+/riscv-tests/
+/fceux-am/
+/thwaite-nes/
+/verilator/
+/nvboard/

@@ -1,45 +1,23 @@
-//=====================================================================
-// main.cpp —— 仿真环境的入口
-//
-// 用法：
-//   ./build/top <二进制镜像路径>       指定跑哪个程序
-//   不传路径就用 DEFAULT_IMG
-//
-// 结束条件（取代了原来 top.v 里"跑满 400 拍就 $finish"那种做法）：
-//   程序执行 ebreak -> RTL 调 set_finish_flag(a0)，这里轮询到就停机。
-//   a0 == 0 报 HIT GOOD TRAP 并返回 0；a0 != 0 报 HIT BAD TRAP 并返回非 0。
-//
-//   为什么退出码要区分：Makefile 是看进程退出码判 PASS/FAIL 的
-//   （见 am-kernels/tests/cpu-tests/Makefile），全返回 0 的话
-//   wrong 程序也会被判成 PASS。
-//
-// 波形：
-//   默认不录 —— 批量跑程序时写 VCD 又慢又占地方，还容易刷屏。
-//   要看波形：NPC_TRACE=1 ./build/top <镜像>
-//=====================================================================
 #include <Vtop.h>
 #include <verilated.h>
 #include <verilated_vcd_c.h>
-
+#include "../sEMU/hello.h"
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 
-extern "C" bool get_sim_finish(void);     // 实现见 csrc/dpi_sim.cpp
+extern "C" bool get_sim_finish(void);
 extern "C" int  get_sim_exit_code(void);
 extern "C" void pmem_init(const char *img);
 
 static const char *DEFAULT_IMG =
     "../am-kernels/tests/cpu-tests/build/dummy-minirv-npc.bin";
 
-// 程序始终不执行 ebreak 时（程序自己死循环，或者 NPC 有 bug）的兜底拍数。
-// 跑到这里就判失败退出，免得批量跑的时候整个卡死。真跑不完就调大。
-#define MAX_CYCLES 10000000
+#define MAX_CYCLES 1000000000
 
 int main(int argc, char **argv) {
     Verilated::commandArgs(argc, argv);
 
-    // 必须在 time 0 之前调，否则直接 abort
     Vtop *tb = new Vtop;
     Verilated::traceEverOn(true);
 
@@ -50,7 +28,13 @@ int main(int argc, char **argv) {
         tfp->open("wave.vcd");
     }
 
-    pmem_init(argc > 1 ? argv[1] : DEFAULT_IMG);
+    // RTL 和参考模型必须加载同一个镜像，否则两边跑的根本不是同一个程序。
+    const char *img = (argc > 1) ? argv[1] : DEFAULT_IMG;
+    pmem_init(img);
+    if (emu_init(img) != 0) {
+        std::printf("emu_init 失败: %s\n", img);
+        return 1;
+    }
 
     uint64_t sim_time = 0;
     auto step = [&]() {                 // 推进一个时钟周期
@@ -63,21 +47,87 @@ int main(int argc, char **argv) {
     };
 
     // 复位：先拉高 rst 走两拍，再放开。
-    // 原来的 main 从头到尾没把 rst 放下来，pc 就一直卡在 0x80000000，
-    // 一条指令都没执行过 —— 这点必须先修掉，否则后面测什么都测不出来。
     tb->rst = 1; tb->clk = 0; tb->eval();
     step(); step();
     tb->rst = 0;
 
-    uint64_t cycles = 0;
-    while (!get_sim_finish() && !Verilated::gotFinish() && cycles < MAX_CYCLES) {
-        step();
+    // ───────────────────────────────────────────────────────────────
+    // difftest 主循环
+    //
+    // 对齐关系（k = 两边各自已经走完的条数）：
+    //   RTL 第 k 拍（posedge 之前）: pc=addr(k), inst=inst(k), 寄存器堆=state_k
+    //   EMU 走完 k 步:              PC=addr(k), inst=inst(k-1), Reg=state_k
+    //                                              ^ emu 的 inst 慢一条
+    //
+    // 原因：hello.c 的 fetch() 是先取 inst 再 PC+=4，所以 emu 那边 PC 指向
+    // 下一条时，inst 还停在上一条。RTL 则是 inst=pmem_read(pc) 组合读，同拍。
+    //
+    // 所以 pc 和 32 个 GPR 在 step() 之前比（两边都停在 state_k），
+    // inst 必须等两边各走一步之后才比。
+    // ───────────────────────────────────────────────────────────────
+    uint64_t cycles    = 0;
+    int      diff_fail = 0;
+
+    while (!emu_halted() && !Verilated::gotFinish() && cycles < MAX_CYCLES) {
+        // Verilator 生成的端口是普通成员变量，不是函数 —— 不能写 tb->pc()
+        uint32_t rtl_inst = tb->inst;       // 先采下来，等下才轮到它比
+
+        // ---- pc：两边同拍 ----
+        uint32_t rtl_pc = tb->pc;
+        uint32_t emu_pc = (uint32_t)emu_getpc();
+        if (rtl_pc != emu_pc) {
+            std::printf("DIFF pc    @cycle %llu  NPC:0x%08x  EMU:0x%08x\n",
+                        (unsigned long long)cycles, rtl_pc, emu_pc);
+            diff_fail = 1;
+            break;
+        }
+
+        // ---- GPR：32 个全比（此时两边都是 state_k）----
+        // x0 也一起比 —— 两边都该恒为 0，正好是个免费的自检。
+        int bad = -1;
+        for (int i = 0; i < 32; i++) {
+            uint32_t rtl = (uint32_t)tb->gpr_dump[i];
+            uint32_t emu = (uint32_t)emu_getgpr(i);
+            if (rtl != emu) {
+                std::printf("DIFF x%-2d   @cycle %llu  NPC:0x%08x  EMU:0x%08x\n",
+                            i, (unsigned long long)cycles, rtl, emu);
+                bad = i;
+                break;
+            }
+        }
+        if (bad >= 0) { diff_fail = 1; break; }
+
+        step();        // RTL -> 第 k+1 拍
+        emu_step();    // EMU -> 执行完第 k 条
+
+        // ---- inst：emu 的 inst 慢一条，到这之后才对齐 ----
+        uint32_t emu_inst = (uint32_t)emu_getinst();
+        if (emu_inst != rtl_inst) {
+            std::printf("DIFF inst  @cycle %llu  NPC:0x%08x  EMU:0x%08x\n",
+                        (unsigned long long)cycles, rtl_inst, emu_inst);
+            diff_fail = 1;
+            break;
+        }
+
         cycles++;
     }
 
     tb->final();                        // 必须调，不然波形收尾不完整
     if (tfp) { tfp->close(); delete tfp; }
     delete tb;
+
+    if (diff_fail) {
+        std::printf("==== difftest FAIL @cycle %llu ====\n",
+                    (unsigned long long)cycles);
+        return 1;
+    }
+
+    // 两边都该在 ebreak 上停下。只停一边，说明 ebreak 的语义对不上，也是 bug。
+    if (emu_halted() != get_sim_finish()) {
+        std::printf("==== 结束状态不一致：EMU halted=%d, RTL finish=%d ====\n",
+                    emu_halted(), (int)get_sim_finish());
+        return 1;
+    }
 
     if (get_sim_finish()) {
         int code = get_sim_exit_code();

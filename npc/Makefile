@@ -44,6 +44,7 @@ $(SRC_AUTO_BIND): $(NXDC_FILES)
 # project source
 VSRCS = $(shell find $(abspath ./vsrc) -name "*.v")
 CSRCS = $(shell find $(abspath ./csrc) -name "*.c" -or -name "*.cc" -or -name "*.cpp")
+CSRCS += $(abspath ./sEMU/hello.c)
 CSRCS += $(SRC_AUTO_BIND)
 
 # rules for NVBoard
@@ -66,7 +67,12 @@ run: $(BIN)
 	@$(call git_commit, "sim RTL") # DO NOT REMOVE THIS LINE!!!
 	@$^
 
+# 单独编 emulator（脱离 RTL，调 sEMU 自己的 bug 用）。
+# EMU_STANDALONE 是 hello.c 里 main 的开关：带上才有 main，不带就只有 emu_* 供 difftest 调。
+emu:
+	gcc -DEMU_STANDALONE -O2 -g -o $(abspath ./sEMU/sEMU) $(abspath ./sEMU/hello.c)
+
 clean:
 	rm -rf $(BUILD_DIR)
 
-.PHONY: default all clean run
+.PHONY: default all clean run emu
