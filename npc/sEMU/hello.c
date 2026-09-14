@@ -1,3 +1,9 @@
+#ifdef EMU_TRACE
+#define TRACE(...) printf(__VA_ARGS__)
+#else
+#define TRACE(...)
+#endif
+
 #include <stdint.h>
 #include <stdio.h>
 #include <assert.h>
@@ -138,7 +144,7 @@ void fetch(void)
         inst = M[off] | (M[off+1] << 8) | (M[off+2] << 16) | (M[off+3] << 24);
     }
     PC += 4;
-    printf("Fetch PC=%d, inst=0x%08x\n", PC-4, inst);
+    TRACE("Fetch PC=%d, inst=0x%08x\n", PC-4, inst);
 }
 
 int  emu_getpc(){
@@ -201,7 +207,7 @@ uint32_t decode(uint32_t raw_inst)
         if (funct3 == 0 && funct7 == 0)
         {
             result = rs1_data + rs2_data;
-            printf(" -> R-type add x%d, x%d, x%d | val=%u+%u=%u\n", rd, rs1, rs2, rs1_data, rs2_data, result);
+            TRACE(" -> R-type add x%d, x%d, x%d | val=%u+%u=%u\n", rd, rs1, rs2, rs1_data, rs2_data, result);
         }
     }
     else if (opcode == 0x37) //lui U-type
@@ -211,7 +217,7 @@ uint32_t decode(uint32_t raw_inst)
         uint8_t rd = u_ins.ins.rd;
         uint32_t imm = u_ins.ins.imm;
         result =  imm <<12;
-        printf(" -> U-type lui x%d, 0x%x | val=0x%08x\n", rd, imm, result);
+        TRACE(" -> U-type lui x%d, 0x%x | val=0x%08x\n", rd, imm, result);
     }
     else if (opcode == 0x13) // I-type addi
     {
@@ -222,7 +228,7 @@ uint32_t decode(uint32_t raw_inst)
         if (funct3 == 0)
         {
             result = rs1_data + imm;
-            printf(" -> I-type addi x%d, x%d, %d | val=%u+%d=%u\n", rd, rs1, imm, rs1_data, imm, result);
+            TRACE(" -> I-type addi x%d, x%d, %d | val=%u+%d=%u\n", rd, rs1, imm, rs1_data, imm, result);
         }
     }
     else if(opcode ==0x67)  //jalr I-type
@@ -240,7 +246,7 @@ uint32_t decode(uint32_t raw_inst)
             if(rd!=0){
                  Reg[rd]= PC; // 返回地址=当前PC(已经+4)
             }
-            printf(" -> I-type jalr x%d, %d(x%d) | target = %d, ra=%d\n", rd, imm, rs1, target, PC);
+            TRACE(" -> I-type jalr x%d, %d(x%d) | target = %d, ra=%d\n", rd, imm, rs1, target, PC);
         }
     }
     else if(opcode == 0x73) // SYSTEM I-type: ecall / ebreak
@@ -273,13 +279,13 @@ uint32_t decode(uint32_t raw_inst)
         {
             uint32_t data = mem_read(addr,4);
             result= data;
-            printf(" -> I-type lw x%d, %d(x%d) | addr=0x%08x data=0x%08x\n", rd, imm, rs1, addr, data);
+            TRACE(" -> I-type lw x%d, %d(x%d) | addr=0x%08x data=0x%08x\n", rd, imm, rs1, addr, data);
         }
         else if(funct3 == 0b100) // lbu
         {
             uint32_t data = mem_read(addr,1);
             result = data;
-            printf(" -> I-type lbu x%d, %d(x%d) | addr=0x%08x data=0x%02x\n", rd, imm, rs1, addr, data);
+            TRACE(" -> I-type lbu x%d, %d(x%d) | addr=0x%08x data=0x%02x\n", rd, imm, rs1, addr, data);
         }
     }
     else if(opcode == 0x23) // S-type sb/sw
@@ -299,12 +305,12 @@ uint32_t decode(uint32_t raw_inst)
         if(funct3 == 0b000) // sb store byte
         {
             mem_write(addr, wdata, 1);
-            printf(" -> S-type sb x%d, %d(x%d) | addr=0x%08x byte=0x%02x\n", rs2, imm, rs1, addr, wdata & 0xFF);
+            TRACE(" -> S-type sb x%d, %d(x%d) | addr=0x%08x byte=0x%02x\n", rs2, imm, rs1, addr, wdata & 0xFF);
         }
         else if(funct3 == 0b010) // sw store word
         {
             mem_write(addr, wdata, 4);
-            printf(" -> S-type sw x%d, %d(x%d) | addr=0x%08x word=0x%08x\n", rs2, imm, rs1, addr, wdata);
+            TRACE(" -> S-type sw x%d, %d(x%d) | addr=0x%08x word=0x%08x\n", rs2, imm, rs1, addr, wdata);
         }
     }
     else if (opcode == 0x63) // B-type beq
@@ -328,12 +334,12 @@ uint32_t decode(uint32_t raw_inst)
                 j_en = 1;
                 j_is_abs =0;
                 result = imm;
-                printf(" -> B-type beq x%d, x%d, offset=%d | equal, jump\n", rs1, rs2, imm);
+                TRACE(" -> B-type beq x%d, x%d, offset=%d | equal, jump\n", rs1, rs2, imm);
             }
             else
             {
                 j_en = 0;
-                printf(" -> B-type beq x%d, x%d, offset=%d | not equal\n", rs1, rs2, imm);
+                TRACE(" -> B-type beq x%d, x%d, offset=%d | not equal\n", rs1, rs2, imm);
             }
         }
     }
