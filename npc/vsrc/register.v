@@ -23,7 +23,6 @@ always @(posedge clk) begin
         end
     end
     else begin
-        // RISC-V: x0 只读，不能写
         if(w_en && rd != 5'd0) begin
             reg_file[rd] <= w_data;
         end
@@ -38,8 +37,6 @@ always @(*) begin
     a0_data  = reg_file[10];   // x10 = a0，AM 用它在 ebreak 前递结束状态
 end
 
-// 打包成 1024 位给 difftest：bit[31:0]=x0, bit[63:32]=x1, ...
-// 这个顺序正好对上 Verilator 的 VlWide：word i 就是 x_i。
 genvar gi;
 generate
     for (gi = 0; gi < 32; gi = gi + 1) begin : gpr_pack

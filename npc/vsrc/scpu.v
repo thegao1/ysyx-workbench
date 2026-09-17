@@ -1,4 +1,3 @@
-
 module scpu(
     input  clk,
     input  rst,
@@ -6,10 +5,13 @@ module scpu(
     output [31:0] inst,
     output [31:0] pc,
     output [31:0] rd_data,
-    output [1023:0] gpr_dump
+    output [1023:0] gpr_dump,
+    output        status,
+    output        lsu_status,
+    output        commit
+
 );
 
-// ---------- decode ----------
 wire [6:0] opcode;
 wire [4:0] rd;
 wire [2:0] funct3;
@@ -17,37 +19,46 @@ wire [4:0] rs1, rs2;
 wire [6:0] funct7;
 wire [31:0] i_imm, s_imm, u_imm, bge_imm;
 
-// ---------- register_file ----------
-// rd_data 已经是模块的输出端口，这里不能再声明一根同名 wire
 wire [31:0] rs1_data, rs2_data;
 wire [31:0] a0_data;
 wire        w_en;
 wire [4:0]  w_rd;
 wire [31:0] w_data;
 
-// ---------- execute <-> mem ----------
-wire        mw_en;
-wire [3:0]  mw_mask;
-wire [31:0] mw_addr, mw_data;
-wire        mr_en;
-wire [31:0] mr_addr;
-wire [31:0] r_data;
+wire        lsu_wen;
+wire [3:0]  lsu_wmask;
+wire [31:0] lsu_addr, lsu_wdata;
 
-// ---------- execute -> fetch ----------
 wire        pc_sel;
 wire [31:0] pc_target;
+wire        if_busy;
+// IFU <-> MEM 取指总线
+wire [31:0] ifu_raddr;
+wire [31:0] ifu_rdata;
 
-// ---------- 例化：一条直线，没有回路 ----------
+// LSU <-> MEM 访存总线
+wire [31:0] lsu_rdata;
+wire        ifu_reqvalid;
+wire        ifu_respvalid;
+
+wire        lsu_reqvalid;
+wire        lsu_respvalid;
+
 fetch u_fetch(
     .clk(clk),
     .rst(rst),
     .pc_sel(pc_sel),
     .pc_target(pc_target),
     .pc(pc),
-    .inst(inst)
+    .ifu_raddr(ifu_raddr),
+    .ifu_rdata(ifu_rdata),
+    .inst(inst),
+    .status(status),
+    .if_busy(if_busy),
+    .ifu_reqvalid(ifu_reqvalid),
+    .ifu_respvalid(ifu_respvalid)
 );
 
-// bge_imm 悬空会报 PINMISSING（Verilator 默认把 warning 当 error），所以接满
 decode u_decode(
     .inst(inst),
     .opcode(opcode),
@@ -78,6 +89,8 @@ register_file u_reg(
 );
 
 execute u_exec(
+    .clk(clk),
+    .rst(rst),
     .opcode(opcode),
     .rd(rd),
     .funct3(funct3),
@@ -90,35 +103,44 @@ execute u_exec(
     .rs1_data(rs1_data),
     .rs2_data(rs2_data),
     .a0_data(a0_data),
-    .r_data(r_data),
+    .lsu_rdata(lsu_rdata),
+    .ifu_status(status),
+    .lsu_status(lsu_status),
     .w_en(w_en),
     .w_rd(w_rd),
     .w_data(w_data),
-    .mw_en(mw_en),
-    .mw_mask(mw_mask),
-    .mw_addr(mw_addr),
-    .mw_data(mw_data),
-    .mr_en(mr_en),
-    .mr_addr(mr_addr),
+    .lsu_wen(lsu_wen),
+    .lsu_wmask(lsu_wmask),
+    .lsu_addr(lsu_addr),
+    .lsu_wdata(lsu_wdata),
     .pc_sel(pc_sel),
-    .pc_target(pc_target)
+    .pc_target(pc_target),
+    .lsu_reqvalid(lsu_reqvalid),
+    .lsu_respvalid(lsu_respvalid),
+    .if_busy(if_busy)
 );
 
 mem u_mem(
     .clk(clk),
-    .mw_en(mw_en),
-    .mw_mask(mw_mask),
-    .mw_addr(mw_addr),
-    .mw_data(mw_data),
-    .mr_en(mr_en),
-    .mr_addr(mr_addr),
-    .r_data(r_data)
+    .lsu_wen(lsu_wen),
+    .lsu_wmask(lsu_wmask),
+    .lsu_wdata(lsu_wdata),
+    .ifu_raddr(ifu_raddr),
+    .ifu_rdata(ifu_rdata),
+    .lsu_addr(lsu_addr),
+    .ifu_reqvalid(ifu_reqvalid),
+    .ifu_respvalid(ifu_respvalid),
+    .lsu_rdata(lsu_rdata),
+    .lsu_reqvalid(lsu_reqvalid),
+    .lsu_respvalid(lsu_respvalid)
+
 );
 
-// ---------- 老调试通道：store 到地址 0 就点亮 LED ----------
 always @(posedge clk or posedge rst) begin
     if (rst)                          led <= 16'd0;
-    else if (mw_en && mw_addr == 32'd0) led <= mw_data[15:0];
+    else if (lsu_wen && lsu_addr == 32'd0) led <= lsu_wdata[15:0];
 end
+
+assign commit = status && ifu_respvalid && (!if_busy || lsu_status);
 
 endmodule

@@ -9,11 +9,12 @@
 extern "C" bool get_sim_finish(void);
 extern "C" int  get_sim_exit_code(void);
 extern "C" void pmem_init(const char *img);
+extern "C" void refresh_time(void);
 
 static const char *DEFAULT_IMG =
     "../am-kernels/tests/cpu-tests/build/dummy-minirv-npc.bin";
 
-#define MAX_CYCLES 1000000000
+#define MAX_CYCLES 10000000000
 
 int main(int argc, char **argv) {
     Verilated::commandArgs(argc, argv);
@@ -28,7 +29,6 @@ int main(int argc, char **argv) {
         tfp->open("wave.vcd");
     }
 
-    // RTL 和参考模型必须加载同一个镜像，否则两边跑的根本不是同一个程序。
     const char *img = (argc > 1) ? argv[1] : DEFAULT_IMG;
     pmem_init(img);
     if (emu_init(img) != 0) {
@@ -37,7 +37,7 @@ int main(int argc, char **argv) {
     }
 
     uint64_t sim_time = 0;
-    auto step = [&]() {                 // 推进一个时钟周期
+    auto step = [&]() {
         tb->clk = 0; tb->eval();
         if (tfp) tfp->dump(sim_time);
         sim_time++;
@@ -46,44 +46,32 @@ int main(int argc, char **argv) {
         sim_time++;
     };
 
-    // 复位：先拉高 rst 走两拍，再放开。
     tb->rst = 1; tb->clk = 0; tb->eval();
     step(); step();
     tb->rst = 0;
 
-    // ───────────────────────────────────────────────────────────────
-    // difftest 主循环
-    //
-    // 对齐关系（k = 两边各自已经走完的条数）：
-    //   RTL 第 k 拍（posedge 之前）: pc=addr(k), inst=inst(k), 寄存器堆=state_k
-    //   EMU 走完 k 步:              PC=addr(k), inst=inst(k-1), Reg=state_k
-    //                                              ^ emu 的 inst 慢一条
-    //
-    // 原因：hello.c 的 fetch() 是先取 inst 再 PC+=4，所以 emu 那边 PC 指向
-    // 下一条时，inst 还停在上一条。RTL 则是 inst=pmem_read(pc) 组合读，同拍。
-    //
-    // 所以 pc 和 32 个 GPR 在 step() 之前比（两边都停在 state_k），
-    // inst 必须等两边各走一步之后才比。
-    // ───────────────────────────────────────────────────────────────
     uint64_t cycles    = 0;
     int      diff_fail = 0;
-
+    uint64_t insts     = 0;
     while (!emu_halted() && !Verilated::gotFinish() && cycles < MAX_CYCLES) {
-        // Verilator 生成的端口是普通成员变量，不是函数 —— 不能写 tb->pc()
-        uint32_t rtl_inst = tb->inst;       // 先采下来，等下才轮到它比
 
-        // ---- pc：两边同拍 ----
+        if (!tb->commit) {  // 指令未提交（IFU idle 或 load 发地址周期），跳过对比
+            step();
+            cycles++;
+            continue;
+        }
+        uint32_t rtl_inst = tb->inst;
+        insts++;
+
         uint32_t rtl_pc = tb->pc;
         uint32_t emu_pc = (uint32_t)emu_getpc();
         if (rtl_pc != emu_pc) {
-            std::printf("DIFF pc    @cycle %llu  NPC:0x%08x  EMU:0x%08x\n",
-                        (unsigned long long)cycles, rtl_pc, emu_pc);
+            std::printf("DIFF pc    @cycle %llu  NPC:0x%08x  EMU:0x%08x  NPCinst:0x%08x EMUinst:0x%08x\n",
+                        (unsigned long long)cycles, rtl_pc, emu_pc, rtl_inst, (uint32_t)emu_getinst());
             diff_fail = 1;
             break;
         }
 
-        // ---- GPR：32 个全比（此时两边都是 state_k）----
-        // x0 也一起比 —— 两边都该恒为 0，正好是个免费的自检。
         int bad = -1;
         for (int i = 0; i < 32; i++) {
             uint32_t rtl = (uint32_t)tb->gpr_dump[i];
@@ -97,10 +85,10 @@ int main(int argc, char **argv) {
         }
         if (bad >= 0) { diff_fail = 1; break; }
 
-        step();        // RTL -> 第 k+1 拍
+        step();        // RTL -> 执行完第 k 条，pc/GPR 更新到 state(k+1)
+        refresh_time(); // 把 NPC 刚读到的外设值同步给 EMU，再生成新随机值
         emu_step();    // EMU -> 执行完第 k 条
 
-        // ---- inst：emu 的 inst 慢一条，到这之后才对齐 ----
         uint32_t emu_inst = (uint32_t)emu_getinst();
         if (emu_inst != rtl_inst) {
             std::printf("DIFF inst  @cycle %llu  NPC:0x%08x  EMU:0x%08x\n",
@@ -112,7 +100,7 @@ int main(int argc, char **argv) {
         cycles++;
     }
 
-    tb->final();                        // 必须调，不然波形收尾不完整
+    tb->final();
     if (tfp) { tfp->close(); delete tfp; }
     delete tb;
 
@@ -122,7 +110,6 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    // 两边都该在 ebreak 上停下。只停一边，说明 ebreak 的语义对不上，也是 bug。
     if (emu_halted() != get_sim_finish()) {
         std::printf("==== 结束状态不一致：EMU halted=%d, RTL finish=%d ====\n",
                     emu_halted(), (int)get_sim_finish());
@@ -133,13 +120,13 @@ int main(int argc, char **argv) {
         int code = get_sim_exit_code();
         if (code == 0) {
             std::printf("HIT GOOD TRAP\n");
-            return 0;                   // 程序正常结束
+            std::printf("npc的ipc为%lf\n",((double)insts/cycles));
+            return 0;
         }
         std::printf("HIT BAD TRAP, a0 = %d (0x%08x)\n", code, (unsigned)code);
-        return 1;                       // 程序自己报错，让 Makefile 判 FAIL
+        return 1;
     }
 
-    // 没执行到 ebreak
     if (Verilated::gotFinish())
         std::printf("==== RTL 里执行了 $finish，但程序还没执行 ebreak ====\n");
     else

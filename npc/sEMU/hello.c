@@ -1,3 +1,4 @@
+// #define EMU_TRACE 1
 #ifdef EMU_TRACE
 #define TRACE(...) printf(__VA_ARGS__)
 #else
@@ -10,6 +11,15 @@
 #include <string.h>
 
 #include "hello.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+extern int get_uart_status(void);
+extern unsigned long long get_timer_value(void);
+#ifdef __cplusplus
+}
+#endif
 #define DECODE_ITYPE(raw_inst, rs1, rd, funct3, imm)        \
     do {                                                   \
         IType i_ins;                                       \
@@ -98,6 +108,9 @@ int32_t sign_ext(uint32_t val, int bit_cnt)
 }
 
 uint32_t mem_read(uint32_t addr,uint8_t n){
+    if (addr == 0x10000004) return (uint32_t)get_uart_status();
+    if (addr == 0x20000000) return (uint32_t)get_timer_value();
+    if (addr == 0x20000004) return (uint32_t)(get_timer_value() >> 32);
     if (addr < EMU_MEM_BASE) return 0;
     uint32_t off = addr - EMU_MEM_BASE;
     if (off + n > sizeof(M)) return 0; // 边界保护：注意是 addr+n，不是 addr
@@ -144,7 +157,7 @@ void fetch(void)
         inst = M[off] | (M[off+1] << 8) | (M[off+2] << 16) | (M[off+3] << 24);
     }
     PC += 4;
-    TRACE("Fetch PC=%d, inst=0x%08x\n", PC-4, inst);
+    TRACE("Fetch PC=0x%08x, inst=0x%08x\n", PC-4, inst);
 }
 
 int  emu_getpc(){
@@ -207,7 +220,7 @@ uint32_t decode(uint32_t raw_inst)
         if (funct3 == 0 && funct7 == 0)
         {
             result = rs1_data + rs2_data;
-            TRACE(" -> R-type add x%d, x%d, x%d | val=%u+%u=%u\n", rd, rs1, rs2, rs1_data, rs2_data, result);
+            TRACE(" -> R-type add x%d, x%d, x%d | val=0x%08x+0x%08x=0x%08x\n", rd, rs1, rs2, rs1_data, rs2_data, result);
         }
     }
     else if (opcode == 0x37) //lui U-type
@@ -228,7 +241,7 @@ uint32_t decode(uint32_t raw_inst)
         if (funct3 == 0)
         {
             result = rs1_data + imm;
-            TRACE(" -> I-type addi x%d, x%d, %d | val=%u+%d=%u\n", rd, rs1, imm, rs1_data, imm, result);
+            TRACE(" -> I-type addi x%d, x%d, 0x%08x | val=0x%08x+0x%08x=0x%08x\n", rd, rs1, imm, rs1_data, imm, result);
         }
     }
     else if(opcode ==0x67)  //jalr I-type
@@ -246,7 +259,7 @@ uint32_t decode(uint32_t raw_inst)
             if(rd!=0){
                  Reg[rd]= PC; // 返回地址=当前PC(已经+4)
             }
-            TRACE(" -> I-type jalr x%d, %d(x%d) | target = %d, ra=%d\n", rd, imm, rs1, target, PC);
+            TRACE(" -> I-type jalr x%d, 0x%08x(x%d) | target = 0x%08x, ra=0x%08x\n", rd, imm, rs1, target, PC);
         }
     }
     else if(opcode == 0x73) // SYSTEM I-type: ecall / ebreak
@@ -279,13 +292,13 @@ uint32_t decode(uint32_t raw_inst)
         {
             uint32_t data = mem_read(addr,4);
             result= data;
-            TRACE(" -> I-type lw x%d, %d(x%d) | addr=0x%08x data=0x%08x\n", rd, imm, rs1, addr, data);
+            TRACE(" -> I-type lw x%d, 0x%08x(x%d) | addr=0x%08x data=0x%08x\n", rd, imm, rs1, addr, data);
         }
         else if(funct3 == 0b100) // lbu
         {
             uint32_t data = mem_read(addr,1);
             result = data;
-            TRACE(" -> I-type lbu x%d, %d(x%d) | addr=0x%08x data=0x%02x\n", rd, imm, rs1, addr, data);
+            TRACE(" -> I-type lbu x%d, 0x%08x(x%d) | addr=0x%08x data=0x%02x\n", rd, imm, rs1, addr, data);
         }
     }
     else if(opcode == 0x23) // S-type sb/sw
@@ -305,12 +318,12 @@ uint32_t decode(uint32_t raw_inst)
         if(funct3 == 0b000) // sb store byte
         {
             mem_write(addr, wdata, 1);
-            TRACE(" -> S-type sb x%d, %d(x%d) | addr=0x%08x byte=0x%02x\n", rs2, imm, rs1, addr, wdata & 0xFF);
+            TRACE(" -> S-type sb x%d, 0x%08x(x%d) | addr=0x%08x byte=0x%02x\n", rs2, imm, rs1, addr, wdata & 0xFF);
         }
         else if(funct3 == 0b010) // sw store word
         {
             mem_write(addr, wdata, 4);
-            TRACE(" -> S-type sw x%d, %d(x%d) | addr=0x%08x word=0x%08x\n", rs2, imm, rs1, addr, wdata);
+            TRACE(" -> S-type sw x%d, 0x%08x(x%d) | addr=0x%08x word=0x%08x\n", rs2, imm, rs1, addr, wdata);
         }
     }
     else if (opcode == 0x63) // B-type beq
@@ -334,12 +347,12 @@ uint32_t decode(uint32_t raw_inst)
                 j_en = 1;
                 j_is_abs =0;
                 result = imm;
-                TRACE(" -> B-type beq x%d, x%d, offset=%d | equal, jump\n", rs1, rs2, imm);
+                TRACE(" -> B-type beq x%d, x%d, offset=0x%08x | equal, jump\n", rs1, rs2, imm);
             }
             else
             {
                 j_en = 0;
-                TRACE(" -> B-type beq x%d, x%d, offset=%d | not equal\n", rs1, rs2, imm);
+                TRACE(" -> B-type beq x%d, x%d, offset=0x%08x | not equal\n", rs1, rs2, imm);
             }
         }
     }

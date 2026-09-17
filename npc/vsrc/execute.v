@@ -1,122 +1,100 @@
-// code 是 ebreak 前 a0 的值。签名要和 csrc/dpi_sim.cpp 里的定义对上，
-// 少写参数会报 Too many arguments in call to task 'set_finish_flag'。
 import "DPI-C" function void set_finish_flag(input int code);
 
 module execute(
+    input             clk,
+    input             rst,
     input      [6:0]  opcode,
     input      [4:0]  rd,
     input      [2:0]  funct3,
     input      [6:0]  funct7,
-    input      [31:0] pc,        // 当前指令的 PC（jalr 要算 pc+4）
-    input      [31:0] i_imm,     // decode 已符号扩展
+    input      [31:0] pc,
+    input      [31:0] i_imm,
     input      [31:0] s_imm,
     input      [31:0] u_imm,
-    input      [31:0] bge_imm,   // B 型（分支用）
+    input      [31:0] bge_imm,
     input      [31:0] rs1_data,
     input      [31:0] rs2_data,
-    input      [31:0] r_data,    // mem 读回来的数据
     input      [31:0] a0_data,
-    // 写回寄存器堆
+    input      [31:0] lsu_rdata,
+    input             ifu_status,
+    input             lsu_respvalid,
+    output reg        lsu_reqvalid,
+    output reg        lsu_status,
     output reg        w_en,
     output reg [4:0]  w_rd,
     output reg [31:0] w_data,
-
-    // 写内存
-    output reg        mw_en,
-    output reg [3:0]  mw_mask,   // 字节使能，4 位（不是 3 位）
-    output reg [31:0] mw_addr,
-    output reg [31:0] mw_data,
-
-    // 读内存
-    output reg        mr_en,
-    output reg [31:0] mr_addr,
-
-    // 下一条 PC
+    output reg        lsu_wen,
+    output reg [3:0]  lsu_wmask,
+    output reg [31:0] lsu_addr,
+    output reg [31:0] lsu_wdata,
     output reg        pc_sel,
+    output reg        if_busy,
     output reg [31:0] pc_target
-
 );
 
-// 操作码
-localparam OP_R     = 7'b0110011;   // add
-localparam OP_I     = 7'b0010011;   // addi
-localparam OP_U     = 7'b0110111;   // lui
-localparam OP_ebreak= 7'b1110011;   //ebreak
-localparam OP_LOAD = 7'b0000011;   // lb / lh / lw / lbu / lhu
-localparam OP_STORE = 7'b0100011;   // sb / sh / sw
-localparam OP_JALR  = 7'b1100111;   // jalr
-localparam OP_BRANCH= 7'b1100011;   // bge
+localparam OP_R      = 7'b0110011;
+localparam OP_I      = 7'b0010011;
+localparam OP_U      = 7'b0110111;
+localparam OP_ebreak = 7'b1110011;
+localparam OP_LOAD   = 7'b0000011;
+localparam OP_STORE  = 7'b0100011;
+localparam OP_JALR   = 7'b1100111;
+localparam OP_BRANCH = 7'b1100011;
 
-// 实验 B：把「读 r_data」这件事从主组合块里搬出去
-reg [31:0] alu_w_data;   // 非 load 指令的写回数据
+reg [31:0] alu_w_data;
 
+// ===== 块1：ALU + LSU 请求 + 控制（不读 lsu_rdata，避免组合环路）=====
 always @(*) begin
-    w_en      = 1'b0;
-    w_rd      = rd;
-    alu_w_data= 32'd0;
-    mw_en     = 1'b0;
-    mw_mask   = 4'b0000;
-    mw_addr   = 32'd0;
-    mw_data   = 32'd0;
-    mr_en     = 1'b0;
-    mr_addr   = 32'd0;
-    pc_sel    = 1'b0;
-    pc_target = 32'd0;
-
+    w_en       = 1'b0;
+    w_rd       = rd;
+    alu_w_data = 32'd0;
+    lsu_wen    = 1'b0;
+    lsu_wmask  = 4'b0000;
+    lsu_addr   = 32'd0;
+    lsu_wdata  = 32'd0;
+    pc_sel     = 1'b0;
+    pc_target  = 32'd0;
+    if_busy    = 1'b0;
     case (opcode)
-        // add 
         OP_R: begin
             if (funct3 == 3'b000 && funct7 == 7'b0000000) begin
                 w_en   = 1'b1;
                 alu_w_data = rs1_data + rs2_data;
             end
         end
-        // li
         OP_I: begin
             if (funct3 == 3'b000) begin
                 w_en   = 1'b1;
-                alu_w_data = rs1_data + i_imm;   // i_imm 已经是 32 位符号扩展好的
+                alu_w_data = rs1_data + i_imm;
             end
         end
-        OP_ebreak :begin
-             if(funct3 == 3'b000 && i_imm == 32'd1) begin
+        OP_ebreak: begin
+            if (ifu_status == 1'b1 && funct3 == 3'b000 && i_imm == 32'd1) begin
                 set_finish_flag(a0_data);
             end
         end
-        // lui
         OP_U: begin
             w_en   = 1'b1;
             alu_w_data = u_imm;
         end
-        //读内存 
         OP_LOAD: begin
-            mr_en   = 1'b1;
-            mr_addr = rs1_data + i_imm;
-            w_en    = 1'b1;
-            case (funct3)
-                3'b000, 3'b100, 3'b010: ;   // 数据在下面单独的组合块里选
-                default: w_en   = 1'b0;
-            endcase
+            lsu_addr = rs1_data + i_imm;
         end
-
-        // 写内存
         OP_STORE: begin
-            mw_en   = 1'b1;
-            mw_addr = rs1_data + s_imm;
+            lsu_addr = rs1_data + s_imm;
+            lsu_wen  = 1'b1;
             case (funct3)
-                3'b000: begin  
-                    mw_mask = 4'b0001 << mw_addr[1:0];
-                    mw_data = rs2_data << {mw_addr[1:0], 3'b000};
+                3'b000: begin
+                    lsu_wmask = 4'b0001 << lsu_addr[1:0];
+                    lsu_wdata = rs2_data << {lsu_addr[1:0], 3'b000};
                 end
-                3'b010: begin   // sw：全字
-                    mw_mask = 4'b1111;
-                    mw_data = rs2_data;
+                3'b010: begin
+                    lsu_wmask = 4'b1111;
+                    lsu_wdata = rs2_data;
                 end
-                default: mw_en = 1'b0;
+                default: lsu_wen = 1'b0;
             endcase
         end
-
-        // jalr
         OP_JALR: begin
             if (funct3 == 3'b000) begin
                 w_en      = 1'b1;
@@ -125,28 +103,59 @@ always @(*) begin
                 pc_target = (rs1_data + i_imm) & ~32'd1;
             end
         end
-
-        // bge
         OP_BRANCH: begin
             pc_target = pc + bge_imm;
             pc_sel    = (funct3 == 3'b101) &&
                         ($signed(rs1_data) >= $signed(rs2_data));
         end
-
-        default: ;   //
+        default: ;
     endcase
+
+    // idle 拍冻结所有提交使能（放在 case 之后，覆盖上面的赋值）
+    if (ifu_status == 1'b0) begin
+        w_en   = 1'b0;
+        lsu_wen = 1'b0;
+        pc_sel = 1'b0;
+    end
+
+    // load 写回：只在发请求当拍（lsu_status=1 且响应未到）写回，
+    // 响应到达后（lsu_respvalid=1）立即关 w_en，防止 lsu_addr 重算导致二次写回
+    if (opcode == OP_LOAD && lsu_status == 1'b1 && !lsu_respvalid) begin
+        w_en = 1'b1;
+    end
+
+    // if_busy: load/store 还在等数据时(lsu_status==0)，让 IFU 多等一拍
+    if_busy = (opcode == OP_LOAD) && (lsu_status == 1'b0) || (opcode == OP_STORE) && (lsu_status == 1'b0);
 end
+
+// ===== 块2：写回数据选择（读 lsu_rdata，但只输出 w_data，不再驱动 lsu_wen）=====
+wire [31:0] load_wdata;
+assign load_wdata = (funct3 == 3'b000) ? {{24{lsu_rdata[7]}}, lsu_rdata[7:0]} :  // lb
+                    (funct3 == 3'b100) ? {24'b0, lsu_rdata[7:0]}               :  // lbu
+                    lsu_rdata;                                                     // lw
 
 always @(*) begin
-    if (w_en && opcode == OP_LOAD) begin
-        case (funct3)
-            3'b000:  w_data = {{24{r_data[7]}}, r_data[7:0]};   // lb
-            3'b100:  w_data = {24'b0, r_data[7:0]};             // lbu
-            3'b010:  w_data = r_data;                           // lw
-            default: w_data = 32'd0;
-        endcase
+    w_data = alu_w_data;
+    if (opcode == OP_LOAD && lsu_status == 1'b1) begin
+        w_data = load_wdata;
+        
     end
-    else w_data = alu_w_data;
 end
 
+always @(posedge clk or posedge rst) begin
+    if (rst) begin
+        lsu_status  <= 1'b0;
+        lsu_reqvalid <= 1'b0;
+    end else if (lsu_status == 1'b1) begin
+        // 等待状态：只要响应到达就完成，不受当前指令类型限制
+        if (lsu_respvalid) begin
+            lsu_status  <= 1'b0;
+            lsu_reqvalid <= 1'b0;
+        end
+    end else if ((opcode == OP_LOAD || opcode == OP_STORE) && ifu_status == 1'b1) begin
+        // idle：识别到 load/store，发请求
+        lsu_status  <= 1'b1;
+        lsu_reqvalid <= 1'b1;
+    end
+end
 endmodule

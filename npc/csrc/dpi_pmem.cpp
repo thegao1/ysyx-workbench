@@ -1,31 +1,20 @@
-//=====================================================================
-// dpi_pmem.cpp —— 物理内存模型（唯一的一份内存）
-//
-// 为什么要放 C++：DPI 的 import 是函数调用，按值传参。Verilog 那边
-// 就算再写一个 reg 数组，也是另一块内存，两边各改各的、还不报错。
-// 所以内存只在这里存一份，Verilog 通过下面三个函数访问：
-//
-//   pmem_read (raddr)               读 4 字节（小端）
-//   pmem_write(waddr, wdata, wmask) 按 wmask 逐字节写
-//   pmem_init (img)                 装程序：NULL = 内置自检，否则读裸二进制
-//
-// 签名必须和 vsrc/pmem_pkg.v 一致，对不上会链接失败：
-//   package 里是 int / int / byte，这里就是 int / int / char
-//   （Verilator 把 byte 映射成 char，不是 unsigned char）
-//=====================================================================
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
-
+#include <cstdlib>
+#include <sys/time.h>
 extern "C" int pmem_read(int raddr);   // 下面 pmem_init 里要用，先声明
 
 static const uint32_t CONFIG_MBASE = 0x80000000u;   // 内存基址（ysyx 约定）
 static const uint32_t CONFIG_MSIZE = 0x8000000u;    // 128MB
+static int uart_status_value = 0;
+static unsigned long long timer_value = 0;
 
+static int emu_uart_status = 0;
+static unsigned long long emu_timer = 0;
 static uint8_t pmem[CONFIG_MSIZE];
 
-// 内置自检程序：和原来 inst_mem.v 里那 9 条一模一样。
-// 功能是把 1 加到 10 累加起来（结果 55 = 0x37），最后 sw 到地址 0 -> LED。
+
 static const uint32_t builtin_img[] = {
     0x00000093,  // addi x1, x0, 0
     0x00100113,  // addi x2, x0, 1
@@ -87,9 +76,37 @@ extern "C" void pmem_write(int waddr, int wdata, char wmask) {
     for (int i = 0; i < 4; i++)
         if ((wmask >> i) & 1)
             pmem[off + i] = (uint8_t)((data >> (8 * i)) & 0xff);
+
 }
 
 extern "C" void uart_putchar(char c) {
+    
     fputc(c, stdout);   
     fflush(stdout);     
+}
+
+extern "C" int uart_status(int raddr){
+    return uart_status_value;
+}
+
+extern "C" int get_uart_status(){
+    return emu_uart_status;
+}
+
+extern "C" unsigned long long get_time(){
+    return timer_value;
+}
+static unsigned long long cycle = 0;  // 用于算时间，跟 main 的 cycles 没关系
+// 每轮仿真刷新一次外设状态：同一轮内 RTL 和 EMU 读到相同值
+extern "C" void refresh_time(){
+    // 先把旧值留给 EMU（对应 RTL 即将写回的值），再刷新成新值
+    emu_timer       = timer_value;
+    emu_uart_status = uart_status_value;
+    cycle++;
+    timer_value = cycle /100;
+    uart_status_value = (rand() & 0x7) == 0 ? 1 : 0;
+}
+
+extern "C" unsigned long long get_timer_value(){
+    return emu_timer;
 }
