@@ -1,5 +1,5 @@
 
-module decode(
+module ysyx_100023197_idu(
     input      [31:0] inst,
 
     output [6:0]  opcode,

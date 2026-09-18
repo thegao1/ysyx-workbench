@@ -1,6 +1,6 @@
-module register_file(
-    input               clk,
-    input               rst,
+module ysyx_100023197_register(
+    input               clock,
+    input               reset,
     input               w_en,      // 写使能
     input      [4:0]    rd,        // 写地址
     input      [4:0]    rs1,       // 读地址1
@@ -16,8 +16,8 @@ module register_file(
 
 reg [31:0] reg_file [0:31];
 
-always @(posedge clk) begin
-    if(rst) begin
+always @(posedge clock) begin
+    if(reset) begin
         for(int i = 0; i < 32; i = i + 1) begin
             reg_file[i] <= 32'd0;
         end

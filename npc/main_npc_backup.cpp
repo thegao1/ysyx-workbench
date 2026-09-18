@@ -1,75 +1,11 @@
+#include <Vysyx_100023197.h>
 #include <verilated.h>
 #include <verilated_vcd_c.h>
-#include <cassert>
+#include "../sEMU/hello.h"
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
-
-// flash_read：flash.v 的 DPI-C 读镜像函数（SoC 用）。
-// 当前为占位实现，讲义预期触发 assert(0)；下一步实现真正的镜像读取。
 extern "C" void flash_read(int32_t addr, int32_t *data) { assert(0); }
-
-#ifdef NPC_SOC
-// ================= SoC 仿真（VSimTop，双时钟 + 复位100拍） =================
-#include <VSimTop.h>
-
-int main(int argc, char **argv) {
-    Verilated::commandArgs(argc, argv);
-    VSimTop *top = new VSimTop;
-
-    Verilated::traceEverOn(true);
-    VerilatedVcdC *tfp = nullptr;
-    if (std::getenv("NPC_TRACE") != nullptr) {
-        tfp = new VerilatedVcdC;
-        top->trace(tfp, 99);
-        tfp->open("wave.vcd");
-    }
-
-    uint64_t sim_time = 0;
-    // 双时钟同驱：clock 控制 SoC，cpuClock 控制 NPC，目前用相同输入
-    auto single_cycle = [&]() {
-        top->clock = 0; top->cpuClock = 0; top->eval();
-        if (tfp) tfp->dump(sim_time); sim_time++;
-        top->clock = 1; top->cpuClock = 1; top->eval();
-        if (tfp) tfp->dump(sim_time); sim_time++;
-    };
-
-    // 复位期间：所有 input 赋初值
-    top->reset                  = 1;
-    top->coreSel                = 0;
-    top->externalPins_mygpio_in = 0;
-    top->externalPins_uart0_rx  = 1;
-    top->clock                  = 0;
-    top->cpuClock               = 0;
-    top->eval();
-
-    // 复位维持至少 100 个周期（讲义要求）
-    for (int i = 0; i < 100; i++) single_cycle();
-
-    // 释放复位，开始跑（预期触发 flash_read 的 assert(0)）
-    top->reset = 0;
-    printf("reset released, start running...\n");
-    fflush(stdout);
-    uint64_t cycles = 0;
-    while (!Verilated::gotFinish()) {
-        single_cycle();
-        cycles++;
-        if ((cycles % 1000000) == 0)
-            printf("cycle %llu\n", (unsigned long long)cycles);
-    }
-
-    top->final();
-    if (tfp) { tfp->close(); delete tfp; }
-    delete top;
-    printf("sim done, cycles=%llu\n", (unsigned long long)cycles);
-    return 0;
-}
-
-#else
-// ================= 独立 NPC 仿真（Vysyx_100023197 + DiffTest + IPC） =================
-#include <Vysyx_100023197.h>
-#include "../sEMU/hello.h"
-
 extern "C" bool get_sim_finish(void);
 extern "C" int  get_sim_exit_code(void);
 extern "C" void pmem_init(const char *img);
@@ -198,4 +134,3 @@ int main(int argc, char **argv) {
                     (unsigned long long)cycles);
     return 1;
 }
-#endif
