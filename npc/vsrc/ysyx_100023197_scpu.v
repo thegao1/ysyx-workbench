@@ -40,6 +40,7 @@ wire [31:0] w_data;
 wire        pc_sel;
 wire [31:0] pc_target;
 wire        if_busy;
+wire        resp_latched;
 
 ysyx_100023197_ifu u_fetch(
     .clock(clock),
@@ -53,7 +54,8 @@ ysyx_100023197_ifu u_fetch(
     .status(status),
     .if_busy(if_busy),
     .io_ifu_reqValid(io_ifu_reqValid),
-    .io_ifu_respValid(io_ifu_respValid)
+    .io_ifu_respValid(io_ifu_respValid),
+    .resp_latched(resp_latched)
 );
 
 ysyx_100023197_idu u_decode(
@@ -102,6 +104,7 @@ ysyx_100023197_exu u_exec(
     .a0_data(a0_data),
     .io_lsu_rdata(io_lsu_rdata),
     .ifu_status(status),
+    .ifu_respValid(io_ifu_respValid),
     .lsu_status(lsu_status),
     .w_en(w_en),
     .w_rd(w_rd),
@@ -124,6 +127,10 @@ always @(posedge clock or posedge reset) begin
     else if (io_lsu_wen && io_lsu_addr == 32'd0) led <= io_lsu_wdata[15:0];
 end
 
-assign commit = status && io_ifu_respValid && (!if_busy || lsu_status);
+// 退休指示：本拍 IFU 确实提交了一条指令（pc 已推进/跳转）。
+// 取指响应是单拍脉冲，load/store 期间 IFU 会暂停请求，等到 LSU 释放时
+// respValid 已回落，只能靠 IFU 内部锁存的 resp_latched 判定，
+// 否则 store 的提交拍会被漏掉（DiffTest 少采一条，之后永久错位）。
+assign commit = status && (io_ifu_respValid || resp_latched) && !if_busy;
 
 endmodule
