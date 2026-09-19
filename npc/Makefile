@@ -42,7 +42,7 @@ INC_PATH ?=
 VERILATOR = verilator
 VERILATOR_CFLAGS += -MMD --build -cc  \
 				-O3 --x-assign fast --x-initial fast --noassert --trace -Wno-fatal \
-				--timescale "1ns/1ns" --no-timing  -D__VERILOG__ -DPDK_BEHAV\
+				--timescale "1ns/1ns" --no-timing -Wno-PROCASSWIRE -Wno-PINMISSING -D__VERILOG__ -DPDK_BEHAV\
 				-D__UART_TO_CONSOLE__ \
 				-I$(SOC_DIR)/perip/uart16550/rtl -I$(SOC_DIR)/perip/spi/rtl
 BUILD_DIR = ./build

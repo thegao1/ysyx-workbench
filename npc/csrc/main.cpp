@@ -4,16 +4,23 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
-
-// flash_read：flash.v 的 DPI-C 读镜像函数（SoC 用）。
-// 当前为占位实现，讲义预期触发 assert(0)；下一步实现真正的镜像读取。
-extern "C" void flash_read(int32_t addr, int32_t *data) { assert(0); }
-
 #ifdef NPC_SOC
 // ================= SoC 仿真（VSimTop，双时钟 + 复位100拍） =================
 #include <VSimTop.h>
 
+// hello 程序（ysyxSoC 专用，链接在 0x30000000）
+static const char *DEFAULT_IMG =
+    "../ysyxSoC/ready-to-run/minirv/hello-minirv-ysyxsoc.bin";
+
+// dpi_pmem.cpp 实现：把 bin 读入 16MB flash 数组
+extern "C" void soc_init(const char *img);
+extern "C" bool get_sim_finish(void);
+extern "C" int  get_sim_exit_code(void);
+
 int main(int argc, char **argv) {
+    const char *flash_img = (argc > 1) ? argv[1] : DEFAULT_IMG;
+    soc_init(flash_img);
+
     Verilated::commandArgs(argc, argv);
     VSimTop *top = new VSimTop;
 
@@ -21,10 +28,9 @@ int main(int argc, char **argv) {
     VerilatedVcdC *tfp = nullptr;
     if (std::getenv("NPC_TRACE") != nullptr) {
         tfp = new VerilatedVcdC;
-        top->trace(tfp, 99);
+        top->trace(tfp, 9);
         tfp->open("wave.vcd");
     }
-
     uint64_t sim_time = 0;
     // 双时钟同驱：clock 控制 SoC，cpuClock 控制 NPC，目前用相同输入
     auto single_cycle = [&]() {
@@ -46,17 +52,34 @@ int main(int argc, char **argv) {
     // 复位维持至少 100 个周期（讲义要求）
     for (int i = 0; i < 100; i++) single_cycle();
 
-    // 释放复位，开始跑（预期触发 flash_read 的 assert(0)）
+    // 释放复位，开始跑
     top->reset = 0;
     printf("reset released, start running...\n");
     fflush(stdout);
     uint64_t cycles = 0;
-    while (!Verilated::gotFinish()) {
+    // 跑够上限自动退出（程序死循环或卡总线时兜底）。SoC 侧取指/访存都要走
+    // AXI→APB→QSPI，一条指令平均要上百拍；光加载 ELF 就 ~1.5 亿拍。
+    // 实测 narcissistic 要执行 330 万条指令，折合 ≈5.4 亿拍，所以上限必须给足，
+    // 不然会把「只是慢」误判成死循环。可用 NPC_MAX_CYCLES 环境变量覆盖。
+    uint64_t MAX_SOC_CYCLES = 2000000000;
+    if (const char *e = std::getenv("NPC_MAX_CYCLES"))
+        MAX_SOC_CYCLES = strtoull(e, nullptr, 0);
+    while (!Verilated::gotFinish() && !get_sim_finish() && cycles < MAX_SOC_CYCLES) {
         single_cycle();
         cycles++;
-        if ((cycles % 1000000) == 0)
-            printf("cycle %llu\n", (unsigned long long)cycles);
+        if ((cycles % 10000000) == 0) {
+            printf("\n[progress] cycle %llu\n", (unsigned long long)cycles);
+            fflush(stdout);
+        }
     }
+    if (get_sim_finish()) {
+        int code = get_sim_exit_code();
+        printf("HIT %s TRAP, a0=%d (0x%08x), cycles=%llu\n",
+               code == 0 ? "GOOD" : "BAD", code, (unsigned)code, (unsigned long long)cycles);
+    } else {
+        printf("NO TRAP, ran %llu cycles\n", (unsigned long long)cycles);
+    }
+    std::fflush(stdout);
 
     top->final();
     if (tfp) { tfp->close(); delete tfp; }
@@ -74,6 +97,7 @@ extern "C" bool get_sim_finish(void);
 extern "C" int  get_sim_exit_code(void);
 extern "C" void pmem_init(const char *img);
 extern "C" void refresh_time(void);
+extern "C" int  pmem_read(int raddr);
 
 static const char *DEFAULT_IMG =
     "../am-kernels/tests/cpu-tests/build/dummy-minirv-npc.bin";
@@ -117,6 +141,7 @@ int main(int argc, char **argv) {
     uint64_t cycles    = 0;
     int      diff_fail = 0;
     uint64_t insts     = 0;
+
     while (!emu_halted() && !Verilated::gotFinish() && cycles < MAX_CYCLES) {
 
         if (!tb->commit) {  // 指令未提交（IFU idle 或 load 发地址周期），跳过对比
@@ -124,7 +149,10 @@ int main(int argc, char **argv) {
             cycles++;
             continue;
         }
-        uint32_t rtl_inst = tb->inst;
+        // 这里不能用 tb->inst：顶层存储器把 io_ifu_rdata 寄存并门控在 reqValid 上，
+        // load/store 完成拍 IFU 已停发请求，rdata 被清 0，不是当前指令。
+        // 独立模式取指是组合读，直接按 PC 取存储器的字即可。
+        uint32_t rtl_inst = (uint32_t)pmem_read((int)tb->pc);
         insts++;
 
         uint32_t rtl_pc = tb->pc;
@@ -136,18 +164,17 @@ int main(int argc, char **argv) {
             break;
         }
 
-        int bad = -1;
         for (int i = 0; i < 32; i++) {
             uint32_t rtl = (uint32_t)tb->gpr_dump[i];
             uint32_t emu = (uint32_t)emu_getgpr(i);
             if (rtl != emu) {
                 std::printf("DIFF x%-2d   @cycle %llu  NPC:0x%08x  EMU:0x%08x\n",
                             i, (unsigned long long)cycles, rtl, emu);
-                bad = i;
+                diff_fail = 1;
                 break;
             }
         }
-        if (bad >= 0) { diff_fail = 1; break; }
+        if (diff_fail) break;
 
         step();        // RTL -> 执行完第 k 条，pc/GPR 更新到 state(k+1)
         refresh_time(); // 把 NPC 刚读到的外设值同步给 EMU，再生成新随机值
@@ -184,7 +211,9 @@ int main(int argc, char **argv) {
         int code = get_sim_exit_code();
         if (code == 0) {
             std::printf("HIT GOOD TRAP\n");
-            std::printf("npc的ipc为%lf\n",((double)insts/cycles));
+            std::printf("npc的ipc为%lf （指令 %llu 拍 %llu）\n",
+                        ((double)insts/cycles), (unsigned long long)insts,
+                        (unsigned long long)cycles);
             return 0;
         }
         std::printf("HIT BAD TRAP, a0 = %d (0x%08x)\n", code, (unsigned)code);

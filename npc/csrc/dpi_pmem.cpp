@@ -7,12 +7,14 @@ extern "C" int pmem_read(int raddr);   // 下面 pmem_init 里要用，先声明
 
 static const uint32_t CONFIG_MBASE = 0x80000000u;   // 内存基址（ysyx 约定）
 static const uint32_t CONFIG_MSIZE = 0x8000000u;    // 128MB
-static int uart_status_value = 0;
+static int uart_status_value = 0x60; // THR empty + TEMT
 static unsigned long long timer_value = 0;
 
 static int emu_uart_status = 0;
 static unsigned long long emu_timer = 0;
 static uint8_t pmem[CONFIG_MSIZE];
+// 16MB Flash 镜像（SoC 用，CPU 0x30000000 -> flash 偏移 0）
+static uint8_t flash[16 * 1024 * 1024];
 
 
 static const uint32_t builtin_img[] = {
@@ -34,6 +36,33 @@ static void pmem_load_word(uint32_t off, uint32_t w) {
     pmem[off + 1] = (uint8_t)((w >> 8) & 0xff);
     pmem[off + 2] = (uint8_t)((w >> 16) & 0xff);
     pmem[off + 3] = (uint8_t)((w >> 24) & 0xff);
+}
+
+// SoC：把 bin 读入 16MB flash 镜像（CPU 复位 PC=0x30000000 -> flash 偏移 0）
+extern "C" void soc_init(const char *img) {
+    std::memset(flash, 0, sizeof(flash));
+    if (img == nullptr) {
+        for (uint32_t i = 0; i < builtin_words; i++)
+            std::memcpy(&flash[i * 4], &builtin_img[i], 4);
+    } else {
+        std::FILE *f = std::fopen(img, "rb");
+        if (f == nullptr) {
+            std::printf("flash_init: 打不开 %s\n", img);
+            return;
+        }
+        size_t got = std::fread(flash, 1, sizeof(flash), f);
+        std::printf("flash_init: %s -> %zu 字节\n", img, got);
+        std::fclose(f);
+    }
+}
+
+// DPI-C：flash.v 调用，addr 是 24 位 flash 偏移（0x000000~0xFFFFFF）
+extern "C" void flash_read(int raddr, int *data) {
+    if (raddr < 0 || (uint32_t)raddr > sizeof(flash) - 4) {
+        *data = 0;
+        return;
+    }
+    *data = *(int32_t *)&flash[raddr];
 }
 
 extern "C" void pmem_init(const char *img) {
@@ -80,8 +109,7 @@ extern "C" void pmem_write(int waddr, int wdata, char wmask) {
 }
 
 extern "C" void uart_putchar(char c) {
-    
-    fputc(c, stdout);   
+    fputc(c, stdout);
     fflush(stdout);     
 }
 
@@ -104,7 +132,7 @@ extern "C" void refresh_time(){
     emu_uart_status = uart_status_value;
     cycle++;
     timer_value = cycle /100;
-    uart_status_value = (rand() & 0x7) == 0 ? 1 : 0;
+    uart_status_value = 0x60; // keep THR empty
 }
 
 extern "C" unsigned long long get_timer_value(){
