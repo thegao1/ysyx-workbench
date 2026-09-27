@@ -1,4 +1,5 @@
 #include <verilated.h>
+#include <nvboard.h>
 #include <verilated_vcd_c.h>
 #include <cassert>
 #include <cstdint>
@@ -7,6 +8,7 @@
 #ifdef NPC_SOC
 // ================= SoC 仿真（VSimTop，双时钟 + 复位100拍） =================
 #include <VSimTop.h>
+extern void nvboard_bind_all_pins(VSimTop* top);
 
 // hello 程序（ysyxSoC 专用，链接在 0x30000000）
 static const char *DEFAULT_IMG =
@@ -23,7 +25,8 @@ int main(int argc, char **argv) {
 
     Verilated::commandArgs(argc, argv);
     VSimTop *top = new VSimTop;
-
+    nvboard_bind_all_pins(top);
+    nvboard_init();
     Verilated::traceEverOn(true);
     VerilatedVcdC *tfp = nullptr;
     if (std::getenv("NPC_TRACE") != nullptr) {
@@ -32,12 +35,21 @@ int main(int argc, char **argv) {
         tfp->open("wave.vcd");
     }
     uint64_t sim_time = 0;
-    // 双时钟同驱：clock 控制 SoC，cpuClock 控制 NPC，目前用相同输入
+    const uint64_t CPU_CLOCK_MULT = 4;   
+    uint64_t clk_phase = 0;
     auto single_cycle = [&]() {
-        top->clock = 0; top->cpuClock = 0; top->eval();
+        top->cpuClock = 0;                
+        top->eval();
         if (tfp) tfp->dump(sim_time); sim_time++;
-        top->clock = 1; top->cpuClock = 1; top->eval();
+        top->cpuClock = 1;                 
+        top->eval();
         if (tfp) tfp->dump(sim_time); sim_time++;
+
+        clk_phase += 2;                   
+        if (clk_phase >= CPU_CLOCK_MULT) { /
+            clk_phase -= CPU_CLOCK_MULT;
+            top->clock = !top->clock;
+        }
     };
 
     // 复位期间：所有 input 赋初值
@@ -48,8 +60,7 @@ int main(int argc, char **argv) {
     top->clock                  = 0;
     top->cpuClock               = 0;
     top->eval();
-
-    // 复位维持至少 100 个周期（讲义要求）
+    
     for (int i = 0; i < 100; i++) single_cycle();
 
     // 释放复位，开始跑
@@ -57,18 +68,21 @@ int main(int argc, char **argv) {
     printf("reset released, start running...\n");
     fflush(stdout);
     uint64_t cycles = 0;
-    // 跑够上限自动退出（程序死循环或卡总线时兜底）。SoC 侧取指/访存都要走
-    // AXI→APB→QSPI，一条指令平均要上百拍；光加载 ELF 就 ~1.5 亿拍。
-    // 实测 narcissistic 要执行 330 万条指令，折合 ≈5.4 亿拍，所以上限必须给足，
-    // 不然会把「只是慢」误判成死循环。可用 NPC_MAX_CYCLES 环境变量覆盖。
     uint64_t MAX_SOC_CYCLES = 2000000000;
     if (const char *e = std::getenv("NPC_MAX_CYCLES"))
         MAX_SOC_CYCLES = strtoull(e, nullptr, 0);
     while (!Verilated::gotFinish() && !get_sim_finish() && cycles < MAX_SOC_CYCLES) {
         single_cycle();
+        nvboard_update();
         cycles++;
         if ((cycles % 10000000) == 0) {
-            printf("\n[progress] cycle %llu\n", (unsigned long long)cycles);
+            printf("\n[progress] cycle %llu  seg=%02x %02x %02x %02x %02x %02x %02x %02x  led=%04x\n",
+                (unsigned long long)cycles,
+                top->externalPins_mygpio_seg_0, top->externalPins_mygpio_seg_1,
+                top->externalPins_mygpio_seg_2, top->externalPins_mygpio_seg_3,
+                top->externalPins_mygpio_seg_4, top->externalPins_mygpio_seg_5,
+                top->externalPins_mygpio_seg_6, top->externalPins_mygpio_seg_7,
+                top->externalPins_mygpio_out);
             fflush(stdout);
         }
     }
@@ -79,11 +93,13 @@ int main(int argc, char **argv) {
     } else {
         printf("NO TRAP, ran %llu cycles\n", (unsigned long long)cycles);
     }
-    std::fflush(stdout);
+    std::fflush(stdout
+    );
 
     top->final();
     if (tfp) { tfp->close(); delete tfp; }
     delete top;
+    nvboard_quit();
     printf("sim done, cycles=%llu\n", (unsigned long long)cycles);
     return 0;
 }
@@ -106,10 +122,10 @@ static const char *DEFAULT_IMG =
 
 int main(int argc, char **argv) {
     Verilated::commandArgs(argc, argv);
-
     Vysyx_100023197 *tb = new Vysyx_100023197;
     Verilated::traceEverOn(true);
 
+    
     VerilatedVcdC *tfp = nullptr;
     if (std::getenv("NPC_TRACE") != nullptr) {
         tfp = new VerilatedVcdC;
@@ -149,9 +165,6 @@ int main(int argc, char **argv) {
             cycles++;
             continue;
         }
-        // 这里不能用 tb->inst：顶层存储器把 io_ifu_rdata 寄存并门控在 reqValid 上，
-        // load/store 完成拍 IFU 已停发请求，rdata 被清 0，不是当前指令。
-        // 独立模式取指是组合读，直接按 PC 取存储器的字即可。
         uint32_t rtl_inst = (uint32_t)pmem_read((int)tb->pc);
         insts++;
 

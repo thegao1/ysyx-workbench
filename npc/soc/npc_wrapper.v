@@ -12,7 +12,8 @@ module NPC(
     output [1:0]  io_lsu_size,
     output        io_lsu_wen,
     output [31:0] io_lsu_wdata,
-    output [3:0]  io_lsu_wmask
+    output [3:0]  io_lsu_wmask,
+    output        commit
 );
     ysyx_100023197_scpu u_cpu(
         .clock(clock), .reset(reset),
@@ -21,6 +22,7 @@ module NPC(
         .io_lsu_addr(io_lsu_addr), .io_lsu_reqValid(io_lsu_reqValid),
         .io_lsu_rdata(io_lsu_rdata), .io_lsu_respValid(io_lsu_respValid),
         .io_lsu_size(io_lsu_size), .io_lsu_wen(io_lsu_wen),
-        .io_lsu_wdata(io_lsu_wdata), .io_lsu_wmask(io_lsu_wmask)
+        .io_lsu_wdata(io_lsu_wdata), .io_lsu_wmask(io_lsu_wmask),
+        .commit(commit)
     );
 endmodule

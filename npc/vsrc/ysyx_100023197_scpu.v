@@ -28,6 +28,7 @@ wire [4:0] rd;
 wire [2:0] funct3;
 wire [4:0] rs1, rs2;
 wire [6:0] funct7;
+wire [11:0] csr_addr;
 wire [31:0] i_imm, s_imm, u_imm, bge_imm;
 
 wire [31:0] rs1_data, rs2_data;
@@ -66,6 +67,7 @@ ysyx_100023197_idu u_decode(
     .rs1(rs1),
     .rs2(rs2),
     .funct7(funct7),
+    .csr_addr(csr_addr),
     .i_imm(i_imm),
     .s_imm(s_imm),
     .u_imm(u_imm),
@@ -94,6 +96,7 @@ ysyx_100023197_exu u_exec(
     .rd(rd),
     .funct3(funct3),
     .funct7(funct7),
+    .csr_addr(csr_addr),
     .pc(pc),
     .i_imm(i_imm),
     .s_imm(s_imm),

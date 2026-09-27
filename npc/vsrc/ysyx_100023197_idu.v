@@ -8,6 +8,7 @@ module ysyx_100023197_idu(
     output [4:0]  rs1,
     output [4:0]  rs2,
     output [6:0]  funct7,
+    output [11:0] csr_addr,
     output [31:0] i_imm,    // I 型：addi / lw / lbu / jalr
     output [31:0] s_imm,    // S 型：sw / sb
     output [31:0] u_imm,    // U 型：lui
@@ -20,7 +21,7 @@ assign funct3 = inst[14:12];
 assign rs1    = inst[19:15];
 assign rs2    = inst[24:20];
 assign funct7 = inst[31:25];
-
+assign csr_addr=inst[31:20];
 assign i_imm  = {{20{inst[31]}}, inst[31:20]};
 assign s_imm  = {{20{inst[31]}}, inst[31:25], inst[11:7]};
 assign u_imm  = {inst[31:12], 12'b0};

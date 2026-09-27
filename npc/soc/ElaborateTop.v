@@ -414,7 +414,8 @@ module CPU(
   output [2:0]  auto_master_out_arsize,
   output        auto_master_out_rready,
   input         auto_master_out_rvalid,
-  input  [31:0] auto_master_out_rdata
+  input  [31:0] auto_master_out_rdata,
+  output        commit
 );
 
   wire [31:0] _master_bridge_io_ifu_rdata;
@@ -496,7 +497,8 @@ module CPU(
     .io_lsu_size      (_cpu_io_lsu_size),
     .io_lsu_wen       (_cpu_io_lsu_wen),
     .io_lsu_wdata     (_cpu_io_lsu_wdata),
-    .io_lsu_wmask     (_cpu_io_lsu_wmask)
+    .io_lsu_wmask     (_cpu_io_lsu_wmask),
+    .commit            (commit)
   );
   MemBridge bridge0 (
     .clock                  (clock),
@@ -2563,7 +2565,8 @@ module ysyxSoC(
     .auto_master_out_arsize (_cpu_auto_master_out_arsize),
     .auto_master_out_rready      (_cpu_auto_master_out_rready),
     .auto_master_out_rvalid      (_cdc_auto_source_in_rvalid),
-    .auto_master_out_rdata  (_cdc_auto_source_in_rdata)
+    .auto_master_out_rdata  (_cdc_auto_source_in_rdata),
+    .commit                   (commit)
   );
   APBUart16550 DefDevice (
     .clock                 (clock),
@@ -2735,7 +2738,8 @@ module asicTop(
                 mygpio_seg_4,
                 mygpio_seg_5,
                 mygpio_seg_6,
-                mygpio_seg_7
+                mygpio_seg_7,
+  output        commit
 );
 
   wire        _mygpio_mygpio_out_pad_15_pad;
@@ -3513,7 +3517,8 @@ module SimTop(
                 externalPins_mygpio_seg_6,
                 externalPins_mygpio_seg_7,
   input         externalPins_uart0_rx,
-  output        externalPins_uart0_tx
+  output        externalPins_uart0_tx,
+  output        commit
 );
 
   wire       _flash_miso;
@@ -3571,8 +3576,6 @@ module SimTop(
     .dio_3 (_psram_dio_3_wire)
   );
 endmodule
-
-
 
 
 module ElaborateTop(

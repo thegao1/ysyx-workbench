@@ -66,7 +66,7 @@ $(SRC_AUTO_BIND): $(NXDC_FILES)
 VSRCS = $(shell find $(abspath ./vsrc) -name "*.v")
 CSRCS = $(shell find $(abspath ./csrc) -name "*.c" -or -name "*.cc" -or -name "*.cpp")
 CSRCS += $(abspath ./sEMU/hello.c)
-# CSRCS += $(SRC_AUTO_BIND)  # SoC 仿真不用 NVBoard
+CSRCS += $(SRC_AUTO_BIND)  # SoC 仿真不用 NVBoard
 PERIP = $(shell find $(abspath $(PER_DIR)) -name "*.v" -or -name "*.sv")
 MINRIV= $(shell find $(abspath $(MINIRV_DIR)) -name "*.v")
 # rules for NVBoard
@@ -78,7 +78,7 @@ CXXFLAGS += $(INCFLAGS) -DTOP_NAME="\"V$(TOPNAME)\""
 
 # 独立仿真（NVBoard 版）用：$(BIN): $(VSRCS) $(CSRCS) $(NVBOARD_ARCHIVE) $(PERIP) $(MINRIV)
 # SoC 仿真（SimTop）不用 NVBoard，注释掉 NVBOARD_ARCHIVE：
-$(BIN): $(VSRCS) $(CSRCS) $(EXTRA_SRC)
+$(BIN): $(VSRCS) $(CSRCS) $(NVBOARD_ARCHIVE) $(EXTRA_SRC)
 	@rm -rf $(OBJ_DIR)
 	$(VERILATOR) $(VERILATOR_CFLAGS) $(MODE_VFLAGS) \
 		--top-module $(TOPNAME) $^ \

@@ -17,8 +17,7 @@ module ysyx_100023197_ifu(
 assign io_ifu_addr = pc;        // 发地址：每拍都是当前 PC（wire，不是 reg）
 assign inst      = io_ifu_rdata; // 存储器数据直通给 decode（wire，不是 reg）
 
-// resp_latched: 取指响应已到达（等待 LSU 释放期间保持）。
-// 对外输出，供 commit 判断"本拍确实退休了一条指令"。
+
 
 always @(posedge clock or posedge reset) begin
     if (reset) begin
