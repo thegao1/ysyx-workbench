@@ -1,6 +1,4 @@
-// set_finish_flag 是仿真专用的 DPI-C 函数，综合器不认识它，
-// 所以综合时（-DSYNTHESIS / +define+SYNTHESIS）把它整段去掉。
-`ifndef SYNTHESIS
+`ifdef __VERILOG__
 import "DPI-C" function void set_finish_flag(input int code);
 `endif
 
@@ -101,9 +99,17 @@ always @(*) begin
         
         OP_ebreak: begin
 `ifndef SYNTHESIS
+`ifdef __VERILOG__
             if (ifu_status == 1'b1 && funct3 == 3'b000 && i_imm == 32'd1) begin
                 set_finish_flag(a0_data);
             end
+`else 
+            if (ifu_status == 1'b1 && funct3 == 3'b000 && i_imm == 32'd1) begin
+                if(a0_data==32'd0) $display("HIT GOOD TRAP");
+                else           $display("HIT BAD TRAP");
+                $finish;   
+            end
+`endif
 `endif
             if (funct3 == 3'b010) begin
                 w_en   =1'b1;
@@ -202,8 +208,6 @@ always @(*) begin
     
 end
 
-// mcycle 计数器：只有"复位清零 + 每拍自增"，单独写成一块，
-// 这样综合器才能认出标准的"异步复位"结构。
 always @(posedge clock or posedge reset) begin
     if (reset) cycle_cnt <= 64'h0;
     else       cycle_cnt <= cycle_cnt + 1;

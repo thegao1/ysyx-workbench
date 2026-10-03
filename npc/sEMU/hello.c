@@ -108,7 +108,18 @@ int32_t sign_ext(uint32_t val, int bit_cnt)
 }
 
 uint32_t mem_read(uint32_t addr,uint8_t n){
-    if (addr == 0x10000004) return (uint32_t)get_uart_status();
+    // 0x1000_0000 是 UART16550 的 8 个寄存器（偏移 0~7）。
+    // RTL(npc/vsrc/ysyx_100023197_mem.v) 把整块读成常量 0x0000_6060，byte0/byte1 都是 0x60；
+    // 其中偏移 5 = LSR，0x60 = TEMT|THRE，正好是"发送器空闲"。
+    // AM 的 putch(am/src/riscv/npc/trm.c) 每发一个字符前都要 poll LSR 的 THRE 位，
+    // 所以这里必须按字节把 0x60 交出去。以前只认 addr==0x10000004，
+    // 轮到 0x10000005 时就掉进下面 addr<EMU_MEM_BASE 返回 0，EMU 会卡在 while 里死循环。
+    if (addr >= 0x10000000u && addr < 0x10000008u) {
+        uint32_t word = 0x00006060u;  // 与 RTL 侧常量一致（refresh_time 同步的 uart 状态也是这个值）
+        if (n == 1) return (word >> ((addr & 3u) * 8u)) & 0xFFu;
+        if (n == 2) return (word >> ((addr & 2u) * 8u)) & 0xFFFFu;
+        return word;
+    }
     if (addr == 0x20000000) return (uint32_t)get_timer_value();
     if (addr == 0x20000004) return (uint32_t)(get_timer_value() >> 32);
     if (addr < EMU_MEM_BASE) return 0;

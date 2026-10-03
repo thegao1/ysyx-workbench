@@ -131,7 +131,7 @@ extern "C" void refresh_time(){
     emu_timer       = timer_value;
     emu_uart_status = uart_status_value;
     cycle++;
-    timer_value = cycle /100;
+    timer_value = cycle /414;
     uart_status_value = 0x60; // keep THR empty
 }
 

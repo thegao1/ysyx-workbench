@@ -46,7 +46,7 @@ int main(int argc, char **argv) {
         if (tfp) tfp->dump(sim_time); sim_time++;
 
         clk_phase += 2;                   
-        if (clk_phase >= CPU_CLOCK_MULT) { /
+        if (clk_phase >= CPU_CLOCK_MULT) { 
             clk_phase -= CPU_CLOCK_MULT;
             top->clock = !top->clock;
         }
@@ -183,6 +183,8 @@ int main(int argc, char **argv) {
             if (rtl != emu) {
                 std::printf("DIFF x%-2d   @cycle %llu  NPC:0x%08x  EMU:0x%08x\n",
                             i, (unsigned long long)cycles, rtl, emu);
+                std::printf("DIFF pc    @cycle %llu  NPC:0x%08x  EMU:0x%08x  NPCinst:0x%08x EMUinst:0x%08x\n",
+                        (unsigned long long)cycles, rtl_pc, emu_pc, rtl_inst, (uint32_t)emu_getinst());
                 diff_fail = 1;
                 break;
             }
@@ -213,23 +215,29 @@ int main(int argc, char **argv) {
                     (unsigned long long)cycles);
         return 1;
     }
+    #ifdef GL_SIM
+        bool rtl_finish = emu_halted();
+        int  rtl_code   = (int)(uint32_t)emu_getgpr(10);
+    #else
+        bool rtl_finish = get_sim_finish();
+        int  rtl_code   = get_sim_exit_code();
+    #endif
 
-    if (emu_halted() != get_sim_finish()) {
+    if (emu_halted() != rtl_finish) {
         std::printf("==== 结束状态不一致：EMU halted=%d, RTL finish=%d ====\n",
                     emu_halted(), (int)get_sim_finish());
         return 1;
     }
 
-    if (get_sim_finish()) {
-        int code = get_sim_exit_code();
-        if (code == 0) {
+    if (rtl_finish) {
+        if (rtl_code == 0) {
             std::printf("HIT GOOD TRAP\n");
             std::printf("npc的ipc为%lf （指令 %llu 拍 %llu）\n",
                         ((double)insts/cycles), (unsigned long long)insts,
                         (unsigned long long)cycles);
             return 0;
         }
-        std::printf("HIT BAD TRAP, a0 = %d (0x%08x)\n", code, (unsigned)code);
+        std::printf("HIT BAD TRAP, a0 = %d (0x%08x)\n", rtl_code, (unsigned)rtl_code);
         return 1;
     }
 
